@@ -1,0 +1,20 @@
+[package]
+name = "home_bittorrent_bot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = { version = "0.12.7", features = ["multipart", "json", "cookies"] }
+tokio = { version = "1.40.0", features = ["full"] }
+log = "0.4.22"
+emojis = "0.6.0"
+telers = "1.0.0-alpha.21"
+anyhow = "1.0.89"
+config = "0.14.0"
+serde = { version = "1.0.210", features = ["derive"] }
+dotenvy = "0.15.7"
+async-trait = "0.1.82"
+bytes = "1.7.2"
+env_logger = "0.11.5"
+magnet-url = "2.0.0"
+url = "2.5.2"
