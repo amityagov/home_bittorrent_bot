@@ -15,9 +15,9 @@ RUN rm -rf ./target/release/deps/home_bittorrent_bot*
 
 RUN cargo build --release
 
-# FROM rust:1-slim-buster
 FROM ubuntu
-RUN apt-get update && apt install -y openssl ca-certificates
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt install -y openssl ca-certificates && apt clean
 
 WORKDIR /application
 COPY ./config.toml ./config.toml

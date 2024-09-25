@@ -1,4 +1,5 @@
 use anyhow::anyhow;
+use bytes::Bytes;
 use reqwest::multipart::Part;
 use reqwest::{multipart, Client, Url};
 use tokio::sync::RwLock;
@@ -50,18 +51,11 @@ impl QBittorrentClient {
         }
     }
 
-    pub async fn application_version(&self) -> anyhow::Result<String> {
-        let app_ver_url = self.build_url("/api/v2/app/version").await?;
-        let res = self.http_client.get(app_ver_url).send().await?;
-
-        Ok(res.text().await?)
-    }
-
-    pub async fn add_new_torrent_with_magnet(&self, magnet: &str) -> anyhow::Result<()> {
+    pub async fn add_new_torrent<'a>(&self, request_type: RequestType<'a>) -> anyhow::Result<()> {
         let url = self.build_url("/api/v2/torrents/add").await?;
 
-        let bytes = magnet.as_bytes();
-        let multipart = multipart::Form::new().part("urls", Part::bytes(bytes.to_vec()));
+        let (name, part) = request_type.to_part()?;
+        let multipart = multipart::Form::new().part(name, part);
 
         let res = self
             .http_client
@@ -72,16 +66,38 @@ impl QBittorrentClient {
 
         if !res.status().is_success() {
             return Err(anyhow!(
-                "Error adding new torrent with magnet {:?}",
+                "Error adding new torrent with file {:?}",
                 res.text().await?
             ));
         }
 
         let text = res.text().await?;
         if text != "Ok." {
-            return Err(anyhow!("Error adding new torrent with magnet, not Ok."));
+            return Err(anyhow!(
+                "Error adding new torrent with file, not Ok., but {}",
+                text
+            ));
         }
 
         Ok(())
+    }
+}
+
+pub enum RequestType<'a> {
+    Url(&'a str),
+    File(&'a Bytes),
+}
+
+impl<'a> RequestType<'a> {
+    fn to_part(self) -> anyhow::Result<(&'static str, Part)> {
+        match self {
+            RequestType::Url(url) => Ok(("urls", Part::bytes(url.as_bytes().to_vec()))),
+            RequestType::File(file) => Ok((
+                "torrents",
+                Part::bytes(file.to_vec())
+                    .file_name("torrent.torrent")
+                    .mime_str("application/x-bittorrent")?,
+            )),
+        }
     }
 }
