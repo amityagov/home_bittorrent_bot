@@ -106,7 +106,7 @@ async fn echo_handler(bot: Bot, message: Message, state: State) -> HandlerResult
                 Income::Enqueued => Some("✅Торрент добавлен в очередь"),
                 Income::Skipped => None,
             },
-            Err(_) => Some("�Ошибка добавления торрента"),
+            Err(_) => Some("⛔Ошибка добавления торрента"),
         };
 
         if let Some(text) = text {
