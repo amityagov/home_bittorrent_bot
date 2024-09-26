@@ -11,7 +11,7 @@ use log::{info, warn, LevelFilter};
 use reqwest::Client;
 use serde::Deserialize;
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use telers::client::Reqwest;
 use telers::errors::EventErrorKind;
 use telers::methods::{GetFile, SendMessage};
@@ -51,12 +51,23 @@ async fn run_bot(configuration: &Configuration) -> anyhow::Result<()> {
         .register(State::new(configuration));
 
     router.message.register(echo_handler);
+    router.message.register(shutdown_handler);
 
     let dispatcher = Dispatcher::builder()
         .main_router(router)
         .bot(bot)
         .allowed_update(UpdateType::Message)
         .build();
+
+    let shutdown_signal = Arc::new(Mutex::new(false));
+    let shutdown_signal_clone = Arc::clone(&shutdown_signal);
+
+    tokio::spawn(async move {
+        while !*shutdown_signal_clone.lock().unwrap() {
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+        info!("Shutting down the server...");
+    });
 
     Ok(dispatcher
         .to_service_provider_default()
@@ -95,12 +106,31 @@ async fn echo_handler(bot: Bot, message: Message, state: State) -> HandlerResult
                 Income::Enqueued => Some("✅Торрент добавлен в очередь"),
                 Income::Skipped => None,
             },
-            Err(_) => Some("⛔Ошибка добавления торрента"),
+            Err(_) => Some("�Ошибка добавления торрента"),
         };
 
         if let Some(text) = text {
             bot.send(SendMessage::new(message.chat().id(), text))
                 .await?;
+        }
+    }
+
+    Ok(EventReturn::default())
+}
+
+async fn shutdown_handler(bot: Bot, message: Message, state: State) -> HandlerResult {
+    if let Some(from) = message.from() {
+        if !state.configuration.user_id.contains(&from.id.to_string()) {
+            warn!("Unknown user id: {}", from.id);
+            return Ok(EventReturn::default());
+        }
+
+        if let Message::Text(text) = &message {
+            if text.text == state.configuration.shutdown_command {
+                *state.shutdown_signal.lock().unwrap() = true;
+                bot.send(SendMessage::new(message.chat().id(), "Server is shutting down..."))
+                    .await?;
+            }
         }
     }
 
@@ -139,12 +169,14 @@ struct Configuration {
     username: String,
     password: String,
     url: String,
+    shutdown_command: String,
 }
 
 #[derive(Clone, FromContext)]
 #[context(key = "state")]
 struct State {
     inner: Arc<Inner>,
+    shutdown_signal: Arc<Mutex<bool>>,
 }
 
 struct Inner {
@@ -159,6 +191,7 @@ impl State {
                 configuration,
                 client: Client::new(),
             }),
+            shutdown_signal: Arc::new(Mutex::new(false)),
         }
     }
 }
