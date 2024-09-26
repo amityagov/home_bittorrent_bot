@@ -68,6 +68,7 @@ async fn run_bot(configuration: &Configuration) -> anyhow::Result<()> {
         .run_polling()
         .await?)
 }
+
 async fn commands_callback_handler(bot: Bot, callback: CallbackQuery) -> HandlerResult {
     bot.send(AnswerCallbackQuery::new(callback.id.clone()))
         .await?;
@@ -97,7 +98,6 @@ async fn commands_handler(bot: Bot, message: Message, state: State) -> HandlerRe
 
         match message.text() {
             Some(text) if text == "/commands" => {
-                println!("got commands");
                 bot.send(
                     SendMessage::new(message.chat().id(), "Доступные команды").reply_markup(
                         InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::new(
@@ -232,6 +232,7 @@ impl OuterMiddleware for State {
         Ok((request, EventReturn::default()))
     }
 }
+
 fn load_config() -> anyhow::Result<Configuration> {
     let config = Config::builder()
         .add_source(config::File::with_name("config"))
@@ -245,7 +246,7 @@ async fn download_torrent_file(
     state: &State,
     token: &str,
     file_path: &str,
-) -> anyhow::Result<bytes::Bytes> {
+) -> anyhow::Result<Bytes> {
     let url = format!("https://api.telegram.org/file/bot{}/{}", token, file_path);
     let response = state.client.get(url).send().await?;
     Ok(response.bytes().await?)
