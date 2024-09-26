@@ -14,11 +14,12 @@ use std::ops::Deref;
 use std::sync::Arc;
 use telers::client::Reqwest;
 use telers::errors::EventErrorKind;
-use telers::methods::{GetFile, SendMessage};
+use telers::methods::{AnswerCallbackQuery, GetFile, SendMessage};
 use telers::middlewares::outer::MiddlewareResponse;
 use telers::middlewares::OuterMiddleware;
 use telers::router::Request;
 use telers::types::message::{Document, Text};
+use telers::types::{CallbackQuery, ChatIdKind, InlineKeyboardButton, InlineKeyboardMarkup};
 use telers::{
     enums::UpdateType,
     event::{telegram::HandlerResult, EventReturn, ToServiceProvider},
@@ -50,12 +51,15 @@ async fn run_bot(configuration: &Configuration) -> anyhow::Result<()> {
         .outer_middlewares
         .register(State::new(configuration));
 
-    router.message.register(echo_handler);
+    router.callback_query.register(commands_callback_handler);
+    router.message.register(commands_handler);
+    router.message.register(torrents_handler);
 
     let dispatcher = Dispatcher::builder()
         .main_router(router)
         .bot(bot)
         .allowed_update(UpdateType::Message)
+        .allowed_update(UpdateType::CallbackQuery)
         .build();
 
     Ok(dispatcher
@@ -64,8 +68,55 @@ async fn run_bot(configuration: &Configuration) -> anyhow::Result<()> {
         .run_polling()
         .await?)
 }
+async fn commands_callback_handler(bot: Bot, callback: CallbackQuery) -> HandlerResult {
+    bot.send(AnswerCallbackQuery::new(callback.id.clone()))
+        .await?;
 
-async fn echo_handler(bot: Bot, message: Message, state: State) -> HandlerResult {
+    match &callback.data {
+        Some(data) if data.as_ref() == "shutdown" => {
+            bot.send(SendMessage::new(
+                ChatIdKind::id(callback.chat_id().unwrap().clone()),
+                "Выключение...",
+            ))
+            .await?;
+        }
+        _ => {}
+    }
+
+    Ok(EventReturn::Finish)
+}
+
+async fn commands_handler(bot: Bot, message: Message, state: State) -> HandlerResult {
+    println!("{:?}", message);
+
+    if let Some(from) = message.from() {
+        if !state.configuration.user_id.contains(&from.id.to_string()) {
+            warn!("Unknown user id: {}", from.id);
+            return Ok(EventReturn::default());
+        }
+
+        match message.text() {
+            Some(text) if text == "/commands" => {
+                println!("got commands");
+                bot.send(
+                    SendMessage::new(message.chat().id(), "Доступные команды").reply_markup(
+                        InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::new(
+                            "☠️Выключить",
+                        )
+                        .callback_data("shutdown")]]),
+                    ),
+                )
+                .await?;
+                return Ok(EventReturn::Finish);
+            }
+            _ => return Ok(EventReturn::Skip),
+        }
+    }
+
+    Ok(EventReturn::Skip)
+}
+
+async fn torrents_handler(bot: Bot, message: Message, state: State) -> HandlerResult {
     if let Some(from) = message.from() {
         if !state.configuration.user_id.contains(&from.id.to_string()) {
             warn!("Unknown user id: {}", from.id);
