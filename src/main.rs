@@ -1,30 +1,25 @@
 mod client;
+mod state;
 mod util;
 
 use crate::client::{QBittorrentClient, RequestType};
-use crate::util::ResultExt;
+use crate::state::BotState;
+use crate::util::{run_in_docker, ResultExt};
 use anyhow::anyhow;
 use bytes::Bytes;
 use config::{Config, Environment};
 use dotenvy::dotenv;
 use log::{info, warn, LevelFilter};
-use reqwest::Client;
 use serde::Deserialize;
 use std::ops::Deref;
-use std::sync::Arc;
-use telers::client::Reqwest;
-use telers::errors::EventErrorKind;
 use telers::methods::{AnswerCallbackQuery, GetFile, SendMessage};
-use telers::middlewares::outer::MiddlewareResponse;
-use telers::middlewares::OuterMiddleware;
-use telers::router::Request;
 use telers::types::message::{Document, Text};
 use telers::types::{CallbackQuery, ChatIdKind, InlineKeyboardButton, InlineKeyboardMarkup};
 use telers::{
     enums::UpdateType,
     event::{telegram::HandlerResult, EventReturn, ToServiceProvider},
     types::Message,
-    Bot, Dispatcher, FromContext, Router,
+    Bot, Dispatcher, Router,
 };
 
 #[tokio::main]
@@ -34,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
 
     let configuration = load_config()?;
 
-    info!("starting application");
+    info!("starting application, in docker {}", run_in_docker());
     run_bot(&configuration).await?;
 
     Ok(())
@@ -49,7 +44,7 @@ async fn run_bot(configuration: &Configuration) -> anyhow::Result<()> {
     router
         .message
         .outer_middlewares
-        .register(State::new(configuration));
+        .register(BotState::new(configuration)?);
 
     router.callback_query.register(commands_callback_handler);
     router.message.register(commands_handler);
@@ -79,7 +74,7 @@ async fn commands_callback_handler(bot: Bot, callback: CallbackQuery) -> Handler
                 ChatIdKind::id(callback.chat_id().unwrap().clone()),
                 "Выключение...",
             ))
-            .await?;
+                .await?;
         }
         _ => {}
     }
@@ -87,13 +82,11 @@ async fn commands_callback_handler(bot: Bot, callback: CallbackQuery) -> Handler
     Ok(EventReturn::Finish)
 }
 
-async fn commands_handler(bot: Bot, message: Message, state: State) -> HandlerResult {
-    println!("{:?}", message);
-
+async fn commands_handler(bot: Bot, message: Message, state: BotState) -> HandlerResult {
     if let Some(from) = message.from() {
-        if !state.configuration.user_id.contains(&from.id.to_string()) {
+        if !state.user_allowed(from.id) {
             warn!("Unknown user id: {}", from.id);
-            return Ok(EventReturn::default());
+            return Ok(EventReturn::Finish);
         }
 
         match message.text() {
@@ -103,10 +96,10 @@ async fn commands_handler(bot: Bot, message: Message, state: State) -> HandlerRe
                         InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::new(
                             "☠️Выключить",
                         )
-                        .callback_data("shutdown")]]),
+                            .callback_data("shutdown")]]),
                     ),
                 )
-                .await?;
+                    .await?;
                 return Ok(EventReturn::Finish);
             }
             _ => return Ok(EventReturn::Skip),
@@ -116,11 +109,11 @@ async fn commands_handler(bot: Bot, message: Message, state: State) -> HandlerRe
     Ok(EventReturn::Skip)
 }
 
-async fn torrents_handler(bot: Bot, message: Message, state: State) -> HandlerResult {
+async fn torrents_handler(bot: Bot, message: Message, state: BotState) -> HandlerResult {
     if let Some(from) = message.from() {
-        if !state.configuration.user_id.contains(&from.id.to_string()) {
+        if !state.user_allowed(from.id) {
             warn!("Unknown user id: {}", from.id);
-            return Ok(EventReturn::default());
+            return Ok(EventReturn::Finish);
         }
 
         let result = match &message {
@@ -139,7 +132,7 @@ async fn torrents_handler(bot: Bot, message: Message, state: State) -> HandlerRe
             }
             _ => Ok(Income::Skipped),
         }
-        .log_error();
+            .log_error();
 
         let text = match result {
             Ok(income) => match income {
@@ -163,14 +156,14 @@ enum Income {
     Skipped,
 }
 
-async fn add_torrent_by_magnet(state: &State, text: &Box<Text>) -> anyhow::Result<()> {
+async fn add_torrent_by_magnet(state: &BotState, text: &Box<Text>) -> anyhow::Result<()> {
     add_new_torrent(&state, RequestType::Url(text.text.as_ref())).await?;
     Ok(())
 }
 
 async fn add_torrent_by_file(
     bot: &Bot,
-    state: &State,
+    state: &BotState,
     document: &Box<Document>,
 ) -> anyhow::Result<()> {
     let file_id = &document.document.file_id;
@@ -189,48 +182,7 @@ struct Configuration {
     user_id: String,
     username: String,
     password: String,
-    url: String,
-}
-
-#[derive(Clone, FromContext)]
-#[context(key = "state")]
-struct State {
-    inner: Arc<Inner>,
-}
-
-struct Inner {
-    configuration: Configuration,
-    client: Client,
-}
-
-impl State {
-    fn new(configuration: Configuration) -> Self {
-        Self {
-            inner: Arc::new(Inner {
-                configuration,
-                client: Client::new(),
-            }),
-        }
-    }
-}
-
-impl Deref for State {
-    type Target = Inner;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-#[async_trait::async_trait]
-impl OuterMiddleware for State {
-    async fn call(
-        &self,
-        request: Request<Reqwest>,
-    ) -> Result<MiddlewareResponse<Reqwest>, EventErrorKind> {
-        request.context.insert("state", Box::new(self.clone()));
-        Ok((request, EventReturn::default()))
-    }
+    url: Option<String>,
 }
 
 fn load_config() -> anyhow::Result<Configuration> {
@@ -243,7 +195,7 @@ fn load_config() -> anyhow::Result<Configuration> {
 }
 
 async fn download_torrent_file(
-    state: &State,
+    state: &BotState,
     token: &str,
     file_path: &str,
 ) -> anyhow::Result<Bytes> {
@@ -252,10 +204,13 @@ async fn download_torrent_file(
     Ok(response.bytes().await?)
 }
 
-async fn add_new_torrent<'a>(state: &State, request_type: RequestType<'a>) -> anyhow::Result<()> {
-    let client = QBittorrentClient::new(&state.configuration.url).await?;
+async fn add_new_torrent<'a>(
+    state: &BotState,
+    request_type: RequestType<'a>,
+) -> anyhow::Result<()> {
+    let client = QBittorrentClient::new(&state.options.url).await?;
     client
-        .login(&state.configuration.username, &state.configuration.password)
+        .login(&state.options.username, &state.options.password)
         .await?;
 
     client.add_new_torrent(request_type).await?;
